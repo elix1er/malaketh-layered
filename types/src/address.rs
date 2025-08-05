@@ -28,10 +28,10 @@ impl Address {
 
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn from_public_key(public_key: &PublicKey) -> Self {
-        let hash = public_key.hash();
-        let mut address = [0; Self::LENGTH];
-        address.copy_from_slice(&hash[..Self::LENGTH]);
-        Self(AlloyAddress::new(address))
+        // Use Ethereum's standard address derivation:
+        // Address = keccak256(pubkey)[12:32] (last 20 bytes)
+        let ethereum_address = public_key.to_ethereum_address();
+        Self(AlloyAddress::new(ethereum_address))
     }
 
     pub fn into_inner(self) -> [u8; Self::LENGTH] {

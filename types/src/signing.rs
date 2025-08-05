@@ -6,7 +6,7 @@ use malachitebft_core_types::{
 
 use crate::{Proposal, ProposalPart, TestContext, Validator, Vote};
 
-pub use malachitebft_signing_ed25519::*;
+pub use malachitebft_eth_signing_secp256k1::*;
 
 pub trait Hashable {
     type Output;
@@ -19,17 +19,17 @@ impl Hashable for PublicKey {
     fn hash(&self) -> [u8; 32] {
         use sha3::{Digest, Keccak256};
         let mut hasher = Keccak256::new();
-        hasher.update(self.as_bytes());
+        hasher.update(&self.as_bytes());
         hasher.finalize().into()
     }
 }
 
 #[derive(Debug)]
-pub struct Ed25519Provider {
+pub struct Secp256k1Provider {
     private_key: PrivateKey,
 }
 
-impl Ed25519Provider {
+impl Secp256k1Provider {
     pub fn new(private_key: PrivateKey) -> Self {
         Self { private_key }
     }
@@ -47,7 +47,7 @@ impl Ed25519Provider {
     }
 }
 
-impl SigningProvider<TestContext> for Ed25519Provider {
+impl SigningProvider<TestContext> for Secp256k1Provider {
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn sign_vote(&self, vote: Vote) -> SignedVote<TestContext> {
         let signature = self.sign(&vote.to_bytes());
@@ -134,5 +134,29 @@ impl SigningProvider<TestContext> for Ed25519Provider {
         _public_key: &PublicKey,
     ) -> bool {
         unimplemented!()
+    }
+}
+
+// Keep Ed25519Provider for backward compatibility during transition
+#[derive(Debug)]
+pub struct Ed25519Provider {
+    private_key: malachitebft_signing_ed25519::PrivateKey,
+}
+
+impl Ed25519Provider {
+    pub fn new(private_key: malachitebft_signing_ed25519::PrivateKey) -> Self {
+        Self { private_key }
+    }
+
+    pub fn private_key(&self) -> &malachitebft_signing_ed25519::PrivateKey {
+        &self.private_key
+    }
+
+    pub fn sign(&self, data: &[u8]) -> malachitebft_signing_ed25519::Signature {
+        self.private_key.sign(data)
+    }
+
+    pub fn verify(&self, data: &[u8], signature: &malachitebft_signing_ed25519::Signature, public_key: &malachitebft_signing_ed25519::PublicKey) -> bool {
+        public_key.verify(data, signature).is_ok()
     }
 }

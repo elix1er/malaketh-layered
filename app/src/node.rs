@@ -164,7 +164,10 @@ impl Node for App {
 
         let store = Store::open(self.get_home_dir().join("store.db"), metrics)?;
         let start_height = self.start_height.unwrap_or_default();
-        let mut state = State::new(genesis, ctx, signing_provider, address, start_height, store);
+        // TODO: Initialize staking contract when contract address is configured
+        let staking_contract = None; // For now, disable dynamic validator sets
+        
+        let mut state = State::new(genesis, ctx, signing_provider, address, start_height, store, staking_contract);
 
         let engine: Engine = {
             // TODO: make EL host, EL port, and jwt secret configurable

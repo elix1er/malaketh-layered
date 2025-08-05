@@ -15,7 +15,6 @@ malachitebft-config = { workspace = true }
 malachitebft-core-consensus = { workspace = true }
 malachitebft-proto = { workspace = true }
 malachitebft-signing-ed25519 = { workspace = true, features = ["rand", "serde"] }
-malachitebft-eth-signing-secp256k1 = { workspace = true, features = ["rand", "serde"] }
 malachitebft-sync = { workspace = true }
 
 async-trait = { workspace = true }

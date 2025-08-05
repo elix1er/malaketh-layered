@@ -6,7 +6,7 @@ use malachitebft_core_types::{
 
 use crate::{Proposal, ProposalPart, TestContext, Validator, Vote};
 
-pub use malachitebft_eth_signing_secp256k1::*;
+pub use malachitebft_signing_ed25519::*;
 
 pub trait Hashable {
     type Output;

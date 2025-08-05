@@ -21,8 +21,9 @@ use malachitebft_eth_engine::staking::{StakingContract, StakingValidator};
 use malachitebft_eth_types::codec::proto::ProtobufCodec;
 use malachitebft_eth_types::{
     Address, Ed25519Provider, Genesis, Height, ProposalData, ProposalFin, ProposalInit,
-    ProposalPart, TestContext, ValidatorSet, Value,
+    ProposalPart, TestContext, ValidatorSet, Value, Validator,
 };
+use malachitebft_core_types::VotingPower;
 
 use crate::store::{DecidedValue, Store};
 use crate::streaming::{PartStreamsMap, ProposalParts};
@@ -480,14 +481,57 @@ impl State {
             return Ok(self.genesis.validator_set.clone());
         }
 
-        // For now, this is a placeholder since we're using ed25519 internally
-        // In the future, this would convert secp256k1 keys to the appropriate format
-        // For the PoC, we'll just return the genesis validator set with updated powers
+        // For now, we'll map the staking validators to our internal format
+        // In a full implementation, we would:
+        // 1. Convert secp256k1 pubkeys to ed25519 or use secp256k1 throughout
+        // 2. Properly map addresses and voting power
+        // 
+        // For this PoC, we'll create a hybrid approach:
+        // - Use the genesis validator set structure
+        // - Update voting power based on staking contract data
+        // - Maintain deterministic ordering (by power desc, then address asc)
         
-        // TODO: Implement proper validator set conversion when secp256k1 integration is complete
-        tracing::info!("Would convert {} staking validators to validator set", staking_validators.len());
+        let genesis_validators: Vec<_> = self.genesis.validator_set.validators.iter().collect();
+        let mut updated_validators = Vec::new();
         
-        Ok(self.genesis.validator_set.clone())
+        // Map staking data to genesis validators by index/position
+        // This is a simplified mapping for the PoC
+        for (i, genesis_validator) in genesis_validators.into_iter().enumerate() {
+            let voting_power = if i < staking_validators.len() {
+                // Use staking contract power, but ensure minimum of 1
+                std::cmp::max(1, staking_validators[i].power)
+            } else {
+                // Default power for validators not in staking contract
+                1
+            };
+            
+            let updated_validator = Validator::new(
+                genesis_validator.public_key.clone(),
+                VotingPower::new(voting_power)
+            );
+            updated_validators.push(updated_validator);
+        }
+        
+        // Sort validators by power (descending) then by address (ascending) - Cosmos style
+        updated_validators.sort_by(|a, b| {
+            let power_cmp = b.voting_power.cmp(&a.voting_power);
+            if power_cmp == std::cmp::Ordering::Equal {
+                // Convert public keys to addresses for sorting
+                let addr_a = Address::from_public_key(&a.public_key);
+                let addr_b = Address::from_public_key(&b.public_key);
+                addr_a.cmp(&addr_b)
+            } else {
+                power_cmp
+            }
+        });
+        
+        tracing::info!(
+            "Converted {} staking validators to validator set with {} total validators", 
+            staking_validators.len(),
+            updated_validators.len()
+        );
+        
+        Ok(ValidatorSet::new(updated_validators.into_iter()))
     }
 
     /// Verifies the signature of the proposal.

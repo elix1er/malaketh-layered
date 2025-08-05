@@ -282,7 +282,8 @@ pub async fn run(
             // that they are at. When the engine receives such a value, it will forward to the application
             // to decode it from its wire format and send back the decoded value to consensus.
             //
-            // TODO: store the received value somewhere here
+            // When we receive a synced value, store it in our store for future reference
+            // This allows us to serve it to other nodes that might be syncing
             AppMsg::ProcessSyncedValue {
                 height,
                 round,
@@ -292,7 +293,28 @@ pub async fn run(
             } => {
                 info!(%height, %round, "🟢🟢 Processing synced value");
 
-                let value = decode_value(value_bytes);
+                let value = decode_value(value_bytes.clone());
+
+                // Store the synced value as an undecided proposal
+                // This allows other nodes to request it during sync
+                let synced_proposal = ProposedValue {
+                    height,
+                    round,
+                    valid_round: Round::Nil,
+                    proposer,
+                    value: value.clone(),
+                    validity: Validity::Valid,
+                };
+                
+                // Store the proposal and its data
+                if let Err(e) = state.store.store_undecided_proposal(synced_proposal.clone()).await {
+                    error!("Failed to store synced proposal: {}", e);
+                }
+                
+                // Store the raw block data for the synced value
+                if let Err(e) = state.store.store_undecided_block_data(height, round, value_bytes).await {
+                    error!("Failed to store synced block data: {}", e);
+                }
 
                 // We send to consensus to see if it has been decided on
                 if reply

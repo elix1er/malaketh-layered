@@ -115,15 +115,145 @@ impl StakingContract {
     }
     
     /// Simplified ABI decoder for the validator set response
-    /// This is a basic implementation for the PoC
-    fn simple_abi_decode(&self, _data: &str) -> Result<Vec<StakingValidator>> {
-        // For the PoC, return a placeholder validator set
-        // In practice, you would implement proper ABI decoding here
-        // or use alloy-sol-types for automatic ABI encoding/decoding
+    /// This implements basic ABI decoding for (bytes[], uint64[], address[])
+    fn simple_abi_decode(&self, data: &str) -> Result<Vec<StakingValidator>> {
+        if data.len() < 128 {
+            // Not enough data for the tuple structure
+            return Ok(vec![]);
+        }
         
-        // TODO: Implement proper ABI decoding
-        // For now, return an empty set to avoid compilation errors
-        Ok(vec![])
+        // Parse hex data
+        let bytes = hex::decode(data).map_err(|e| eyre!("Failed to decode hex: {}", e))?;
+        if bytes.len() < 96 {
+            return Ok(vec![]);
+        }
+        
+        // ABI structure: (bytes[], uint64[], address[])
+        // Skip to the data section (first 32 bytes are offsets to arrays)
+        let mut offset = 0;
+        
+        // Read offset to pubkeys array (first 32 bytes)
+        let pubkeys_offset = self.read_u256(&bytes, offset)? as usize;
+        offset += 32;
+        
+        // Read offset to powers array (next 32 bytes)  
+        let powers_offset = self.read_u256(&bytes, offset)? as usize;
+        offset += 32;
+        
+        // Read offset to addresses array (next 32 bytes)
+        let addresses_offset = self.read_u256(&bytes, offset)? as usize;
+        
+        // Parse arrays at their respective offsets
+        let pubkeys = self.parse_bytes_array(&bytes, pubkeys_offset)?;
+        let powers = self.parse_uint64_array(&bytes, powers_offset)?;
+        let addresses = self.parse_address_array(&bytes, addresses_offset)?;
+        
+        // Combine into validator structs
+        let mut validators = Vec::new();
+        let min_len = pubkeys.len().min(powers.len()).min(addresses.len());
+        
+        for i in 0..min_len {
+            validators.push(StakingValidator {
+                pubkey: pubkeys[i].clone(),
+                power: powers[i],
+                address: addresses[i].clone(),
+            });
+        }
+        
+        Ok(validators)
+    }
+    
+    /// Helper to read a U256 value from bytes at offset
+    fn read_u256(&self, bytes: &[u8], offset: usize) -> Result<u64> {
+        if offset + 32 > bytes.len() {
+            return Err(eyre!("Not enough bytes to read U256"));
+        }
+        
+        // Convert last 8 bytes to u64 (big endian)
+        let mut value_bytes = [0u8; 8];
+        value_bytes.copy_from_slice(&bytes[offset + 24..offset + 32]);
+        Ok(u64::from_be_bytes(value_bytes))
+    }
+    
+    /// Parse bytes[] array from ABI data
+    fn parse_bytes_array(&self, bytes: &[u8], offset: usize) -> Result<Vec<Vec<u8>>> {
+        if offset + 32 > bytes.len() {
+            return Ok(vec![]);
+        }
+        
+        let length = self.read_u256(bytes, offset)? as usize;
+        let mut result = Vec::new();
+        let mut current_offset = offset + 32;
+        
+        for _ in 0..length {
+            if current_offset + 32 > bytes.len() {
+                break;
+            }
+            
+            // Read offset to this bytes element
+            let element_offset = offset + self.read_u256(bytes, current_offset)? as usize;
+            current_offset += 32;
+            
+            if element_offset + 32 <= bytes.len() {
+                // Read length of this bytes element
+                let element_length = self.read_u256(bytes, element_offset)? as usize;
+                let data_start = element_offset + 32;
+                
+                if data_start + element_length <= bytes.len() {
+                    result.push(bytes[data_start..data_start + element_length].to_vec());
+                }
+            }
+        }
+        
+        Ok(result)
+    }
+    
+    /// Parse uint64[] array from ABI data
+    fn parse_uint64_array(&self, bytes: &[u8], offset: usize) -> Result<Vec<u64>> {
+        if offset + 32 > bytes.len() {
+            return Ok(vec![]);
+        }
+        
+        let length = self.read_u256(bytes, offset)? as usize;
+        let mut result = Vec::new();
+        let mut current_offset = offset + 32;
+        
+        for _ in 0..length {
+            if current_offset + 32 > bytes.len() {
+                break;
+            }
+            
+            let value = self.read_u256(bytes, current_offset)?;
+            result.push(value);
+            current_offset += 32;
+        }
+        
+        Ok(result)
+    }
+    
+    /// Parse address[] array from ABI data  
+    fn parse_address_array(&self, bytes: &[u8], offset: usize) -> Result<Vec<String>> {
+        if offset + 32 > bytes.len() {
+            return Ok(vec![]);
+        }
+        
+        let length = self.read_u256(bytes, offset)? as usize;
+        let mut result = Vec::new();
+        let mut current_offset = offset + 32;
+        
+        for _ in 0..length {
+            if current_offset + 32 > bytes.len() {
+                break;
+            }
+            
+            // Address is the last 20 bytes of the 32-byte slot
+            let address_bytes = &bytes[current_offset + 12..current_offset + 32];
+            let address = format!("0x{}", hex::encode(address_bytes));
+            result.push(address);
+            current_offset += 32;
+        }
+        
+        Ok(result)
     }
 }
 

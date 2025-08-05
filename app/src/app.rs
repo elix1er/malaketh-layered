@@ -14,7 +14,7 @@ use malachitebft_app_channel::{AppMsg, Channels, ConsensusMsg, NetworkMsg};
 use malachitebft_eth_engine::engine::Engine;
 use malachitebft_eth_engine::json_structures::ExecutionBlock;
 use malachitebft_eth_types::codec::proto::ProtobufCodec;
-use malachitebft_eth_types::{Block, BlockHash, TestContext};
+use malachitebft_eth_types::{Block, BlockHash, Height, TestContext};
 
 use crate::state::{decode_value, State};
 
@@ -41,10 +41,12 @@ pub async fn run(
 
                 // We can simply respond by telling the engine to start consensus
                 // at the current height, which is initially 1
+                let current_validator_set = state.get_validator_set_for_height(state.current_height).await;
+                
                 if reply
                     .send(ConsensusMsg::StartHeight(
                         state.current_height,
-                        state.get_validator_set().clone(),
+                        current_validator_set,
                     ))
                     .is_err()
                 {
@@ -148,8 +150,11 @@ pub async fn run(
             //
             // In our case, our validator set stays constant between heights so we can
             // send back the validator set found in our genesis state.
-            AppMsg::GetValidatorSet { height: _, reply } => {
-                if reply.send(state.get_validator_set().clone()).is_err() {
+            AppMsg::GetValidatorSet { height, reply } => {
+                // For dynamic validator sets, we need to read from the staking contract
+                // For now, use the current height to get the validator set
+                let validator_set = state.get_validator_set_for_height(height).await;
+                if reply.send(validator_set).is_err() {
                     error!("🔴 Failed to send GetValidatorSet reply");
                 }
             }
@@ -255,10 +260,14 @@ pub async fn run(
                 // tokio::time::sleep(Duration::from_millis(500)).await;
 
                 // And then we instruct consensus to start the next height
+                // Read the validator set for H+1 (dynamic validator sets)
+                let next_height = Height::new(state.current_height.as_u64() + 1);
+                let next_validator_set = state.get_validator_set_for_height(next_height).await;
+                
                 if reply
                     .send(ConsensusMsg::StartHeight(
                         state.current_height,
-                        state.get_validator_set().clone(),
+                        next_validator_set,
                     ))
                     .is_err()
                 {
@@ -273,7 +282,8 @@ pub async fn run(
             // that they are at. When the engine receives such a value, it will forward to the application
             // to decode it from its wire format and send back the decoded value to consensus.
             //
-            // TODO: store the received value somewhere here
+            // When we receive a synced value, store it in our store for future reference
+            // This allows us to serve it to other nodes that might be syncing
             AppMsg::ProcessSyncedValue {
                 height,
                 round,
@@ -283,7 +293,28 @@ pub async fn run(
             } => {
                 info!(%height, %round, "🟢🟢 Processing synced value");
 
-                let value = decode_value(value_bytes);
+                let value = decode_value(value_bytes.clone());
+
+                // Store the synced value as an undecided proposal
+                // This allows other nodes to request it during sync
+                let synced_proposal = ProposedValue {
+                    height,
+                    round,
+                    valid_round: Round::Nil,
+                    proposer,
+                    value: value.clone(),
+                    validity: Validity::Valid,
+                };
+                
+                // Store the proposal and its data
+                if let Err(e) = state.store.store_undecided_proposal(synced_proposal.clone()).await {
+                    error!("Failed to store synced proposal: {}", e);
+                }
+                
+                // Store the raw block data for the synced value
+                if let Err(e) = state.store.store_undecided_block_data(height, round, value_bytes).await {
+                    error!("Failed to store synced block data: {}", e);
+                }
 
                 // We send to consensus to see if it has been decided on
                 if reply

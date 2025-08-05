@@ -19,17 +19,17 @@ impl Hashable for PublicKey {
     fn hash(&self) -> [u8; 32] {
         use sha3::{Digest, Keccak256};
         let mut hasher = Keccak256::new();
-        hasher.update(self.as_bytes());
+        hasher.update(&self.as_bytes());
         hasher.finalize().into()
     }
 }
 
 #[derive(Debug)]
-pub struct Ed25519Provider {
+pub struct Secp256k1Provider {
     private_key: PrivateKey,
 }
 
-impl Ed25519Provider {
+impl Secp256k1Provider {
     pub fn new(private_key: PrivateKey) -> Self {
         Self { private_key }
     }
@@ -47,7 +47,7 @@ impl Ed25519Provider {
     }
 }
 
-impl SigningProvider<TestContext> for Ed25519Provider {
+impl SigningProvider<TestContext> for Secp256k1Provider {
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn sign_vote(&self, vote: Vote) -> SignedVote<TestContext> {
         let signature = self.sign(&vote.to_bytes());
@@ -132,6 +132,120 @@ impl SigningProvider<TestContext> for Ed25519Provider {
         _extension: &Bytes,
         _signature: &Signature,
         _public_key: &PublicKey,
+    ) -> bool {
+        unimplemented!()
+    }
+}
+
+// Keep Ed25519Provider for backward compatibility during transition
+#[derive(Debug)]
+pub struct Ed25519Provider {
+    private_key: malachitebft_signing_ed25519::PrivateKey,
+}
+
+impl Ed25519Provider {
+    pub fn new(private_key: malachitebft_signing_ed25519::PrivateKey) -> Self {
+        Self { private_key }
+    }
+
+    pub fn private_key(&self) -> &malachitebft_signing_ed25519::PrivateKey {
+        &self.private_key
+    }
+
+    pub fn sign(&self, data: &[u8]) -> malachitebft_signing_ed25519::Signature {
+        self.private_key.sign(data)
+    }
+
+    pub fn verify(&self, data: &[u8], signature: &malachitebft_signing_ed25519::Signature, public_key: &malachitebft_signing_ed25519::PublicKey) -> bool {
+        public_key.verify(data, signature).is_ok()
+    }
+}
+
+impl SigningProvider<TestContext> for Ed25519Provider {
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn sign_vote(&self, vote: Vote) -> SignedVote<TestContext> {
+        let signature = self.sign(&vote.to_bytes());
+        SignedVote::new(vote, signature)
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn verify_signed_vote(
+        &self,
+        vote: &Vote,
+        signature: &malachitebft_signing_ed25519::Signature,
+        public_key: &malachitebft_signing_ed25519::PublicKey,
+    ) -> bool {
+        public_key.verify(&vote.to_bytes(), signature).is_ok()
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn sign_proposal(&self, proposal: Proposal) -> SignedProposal<TestContext> {
+        let signature = self.private_key.sign(&proposal.to_bytes());
+        SignedProposal::new(proposal, signature)
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn verify_signed_proposal(
+        &self,
+        proposal: &Proposal,
+        signature: &malachitebft_signing_ed25519::Signature,
+        public_key: &malachitebft_signing_ed25519::PublicKey,
+    ) -> bool {
+        public_key.verify(&proposal.to_bytes(), signature).is_ok()
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn sign_proposal_part(&self, proposal_part: ProposalPart) -> SignedProposalPart<TestContext> {
+        let signature = self.private_key.sign(&proposal_part.to_sign_bytes());
+        SignedProposalPart::new(proposal_part, signature)
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn verify_signed_proposal_part(
+        &self,
+        proposal_part: &ProposalPart,
+        signature: &malachitebft_signing_ed25519::Signature,
+        public_key: &malachitebft_signing_ed25519::PublicKey,
+    ) -> bool {
+        public_key
+            .verify(&proposal_part.to_sign_bytes(), signature)
+            .is_ok()
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn verify_commit_signature(
+        &self,
+        certificate: &CommitCertificate<TestContext>,
+        commit_sig: &CommitSignature<TestContext>,
+        validator: &Validator,
+    ) -> Result<VotingPower, CertificateError<TestContext>> {
+        use malachitebft_core_types::Validator;
+
+        // Reconstruct the vote that was signed
+        let vote = Vote::new_precommit(
+            certificate.height,
+            certificate.round,
+            NilOrVal::Val(certificate.value_id),
+            *validator.address(),
+        );
+
+        // Verify signature
+        if !self.verify_signed_vote(&vote, &commit_sig.signature, validator.public_key()) {
+            return Err(CertificateError::InvalidSignature(commit_sig.clone()));
+        }
+
+        Ok(validator.voting_power())
+    }
+
+    fn sign_vote_extension(&self, _extension: Bytes) -> SignedExtension<TestContext> {
+        unimplemented!()
+    }
+
+    fn verify_signed_vote_extension(
+        &self,
+        _extension: &Bytes,
+        _signature: &malachitebft_signing_ed25519::Signature,
+        _public_key: &malachitebft_signing_ed25519::PublicKey,
     ) -> bool {
         unimplemented!()
     }

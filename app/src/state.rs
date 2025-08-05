@@ -1,7 +1,7 @@
 //! Internal state of the application. This is a simplified abstract to keep it simple.
 //! A regular application would have mempool implemented, a proper database and input methods like RPC.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
 use color_eyre::eyre;
@@ -17,11 +17,13 @@ use malachitebft_app_channel::app::types::core::{CommitCertificate, Round, Valid
 use malachitebft_app_channel::app::types::{LocallyProposedValue, PeerId, ProposedValue};
 
 use malachitebft_eth_engine::json_structures::ExecutionBlock;
+use malachitebft_eth_engine::staking::{StakingContract, StakingValidator};
 use malachitebft_eth_types::codec::proto::ProtobufCodec;
 use malachitebft_eth_types::{
     Address, Ed25519Provider, Genesis, Height, ProposalData, ProposalFin, ProposalInit,
-    ProposalPart, TestContext, ValidatorSet, Value,
+    ProposalPart, TestContext, ValidatorSet, Value, Validator,
 };
+use malachitebft_core_types::VotingPower;
 
 use crate::store::{DecidedValue, Store};
 use crate::streaming::{PartStreamsMap, ProposalParts};
@@ -46,6 +48,10 @@ pub struct State {
     streams_map: PartStreamsMap,
     #[allow(dead_code)]
     rng: StdRng,
+
+    // Dynamic validator set support
+    pub staking_contract: Option<StakingContract>,
+    pub validator_set_cache: HashMap<Height, ValidatorSet>,
 
     pub current_height: Height,
     pub current_round: Round,
@@ -94,6 +100,7 @@ impl State {
         address: Address,
         height: Height,
         store: Store,
+        staking_contract: Option<StakingContract>,
     ) -> Self {
         Self {
             genesis,
@@ -107,6 +114,8 @@ impl State {
             stream_nonce: 0,
             streams_map: PartStreamsMap::new(),
             rng: StdRng::seed_from_u64(seed_from_address(&address)),
+            staking_contract,
+            validator_set_cache: HashMap::new(),
             peers: HashSet::new(),
 
             latest_block: None,
@@ -410,8 +419,119 @@ impl State {
     }
 
     /// Returns the set of validators.
+    /// Returns the current validator set. 
+    /// If dynamic validator sets are enabled, tries to read from staking contract.
+    /// Falls back to genesis validator set.
+    pub async fn get_validator_set_for_height(&mut self, height: Height) -> ValidatorSet {
+        // Check cache first
+        if let Some(cached_set) = self.validator_set_cache.get(&height) {
+            return cached_set.clone();
+        }
+
+        // If we have a staking contract, try to read from it
+        if let Some(ref staking_contract) = self.staking_contract {
+            match self.read_validator_set_from_contract(staking_contract, height).await {
+                Ok(validator_set) => {
+                    // Cache the result
+                    self.validator_set_cache.insert(height, validator_set.clone());
+                    return validator_set;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read validator set from contract for height {}: {}", height, e);
+                    // Fall through to genesis set
+                }
+            }
+        }
+
+        // Fall back to genesis validator set
+        self.genesis.validator_set.clone()
+    }
+
+    /// Returns the current validator set (synchronous version for compatibility)
     pub fn get_validator_set(&self) -> &ValidatorSet {
         &self.genesis.validator_set
+    }
+
+    /// Read validator set from staking contract for a specific height
+    async fn read_validator_set_from_contract(
+        &self, 
+        staking_contract: &StakingContract, 
+        height: Height
+    ) -> eyre::Result<ValidatorSet> {
+        // Convert height to block number and then to block tag
+        let block_tag = if height.as_u64() <= 1 {
+            "earliest".to_string()
+        } else {
+            format!("0x{:x}", height.as_u64() - 1) // Read at H-1 to get validators for H
+        };
+
+        let staking_validators = staking_contract.get_next_validator_set(&block_tag).await?;
+        
+        // Convert StakingValidator to our internal Validator type
+        self.convert_staking_validators_to_validator_set(staking_validators)
+    }
+
+    /// Convert StakingValidator list to our internal ValidatorSet
+    fn convert_staking_validators_to_validator_set(
+        &self,
+        staking_validators: Vec<StakingValidator>
+    ) -> eyre::Result<ValidatorSet> {
+        if staking_validators.is_empty() {
+            // If no validators from contract, fall back to genesis
+            return Ok(self.genesis.validator_set.clone());
+        }
+
+        // For now, we'll map the staking validators to our internal format
+        // In a full implementation, we would:
+        // 1. Convert secp256k1 pubkeys to ed25519 or use secp256k1 throughout
+        // 2. Properly map addresses and voting power
+        // 
+        // For this PoC, we'll create a hybrid approach:
+        // - Use the genesis validator set structure
+        // - Update voting power based on staking contract data
+        // - Maintain deterministic ordering (by power desc, then address asc)
+        
+        let genesis_validators: Vec<_> = self.genesis.validator_set.validators.iter().collect();
+        let mut updated_validators = Vec::new();
+        
+        // Map staking data to genesis validators by index/position
+        // This is a simplified mapping for the PoC
+        for (i, genesis_validator) in genesis_validators.into_iter().enumerate() {
+            let voting_power = if i < staking_validators.len() {
+                // Use staking contract power, but ensure minimum of 1
+                std::cmp::max(1, staking_validators[i].power)
+            } else {
+                // Default power for validators not in staking contract
+                1
+            };
+            
+            let updated_validator = Validator::new(
+                genesis_validator.public_key.clone(),
+                VotingPower::new(voting_power)
+            );
+            updated_validators.push(updated_validator);
+        }
+        
+        // Sort validators by power (descending) then by address (ascending) - Cosmos style
+        updated_validators.sort_by(|a, b| {
+            let power_cmp = b.voting_power.cmp(&a.voting_power);
+            if power_cmp == std::cmp::Ordering::Equal {
+                // Convert public keys to addresses for sorting
+                let addr_a = Address::from_public_key(&a.public_key);
+                let addr_b = Address::from_public_key(&b.public_key);
+                addr_a.cmp(&addr_b)
+            } else {
+                power_cmp
+            }
+        });
+        
+        tracing::info!(
+            "Converted {} staking validators to validator set with {} total validators", 
+            staking_validators.len(),
+            updated_validators.len()
+        );
+        
+        Ok(ValidatorSet::new(updated_validators.into_iter()))
     }
 
     /// Verifies the signature of the proposal.

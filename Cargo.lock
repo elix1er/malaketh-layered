@@ -4104,6 +4104,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "malachitebft-eth-signing-secp256k1"
+version = "0.0.1"
+dependencies = [
+ "informalsystems-malachitebft-core-types",
+ "k256",
+ "rand 0.8.5",
+ "serde",
+ "sha3",
+ "signature",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "malachitebft-eth-types"
 version = "0.0.1"
 dependencies = [

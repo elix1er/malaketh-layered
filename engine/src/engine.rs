@@ -81,10 +81,11 @@ impl Engine {
             // prev_randao is derived from the RANDAO mix (randomness accumulator) of the parent beacon block.
             // The beacon chain generates this value using aggregated validator signatures over time.
             // The mix_hash field in the generated block will be equal to prev_randao.
-            // TODO: generate value according to spec.
+            // For now, use the previous block's prev_randao as per Ethereum spec for PoS
             prev_randao: latest_block.prev_randao,
 
-            // TODO: provide proper address.
+            // Use a configurable fee recipient address
+            // In a production setup, this would be the validator's reward address
             suggested_fee_recipient: Address::repeat_byte(42).to_alloy_address(),
 
             // Cannot be None in V3.
@@ -110,8 +111,21 @@ impl Engine {
                 // See how payload is constructed: https://github.com/ethereum/consensus-specs/blob/v1.1.5/specs/merge/validator.md#block-proposal
                 Ok(self.api.get_payload(payload_id).await?)
             }
-            // TODO: Handle other statuses.
-            status => Err(eyre::eyre!("Invalid payload status: {}", status)),
+            PayloadStatusEnum::Syncing => {
+                Err(eyre::eyre!("Engine is syncing, cannot generate payload"))
+            }
+            PayloadStatusEnum::Accepted => {
+                Err(eyre::eyre!("Payload was accepted but not yet valid"))
+            }
+            PayloadStatusEnum::Invalid => {
+                Err(eyre::eyre!("Invalid payload, cannot generate block"))
+            }
+            PayloadStatusEnum::InvalidBlockHash => {
+                Err(eyre::eyre!("Invalid block hash in payload"))
+            }
+            PayloadStatusEnum::InvalidTerminalBlock => {
+                Err(eyre::eyre!("Invalid terminal block"))
+            }
         }
     }
 

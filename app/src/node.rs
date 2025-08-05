@@ -42,12 +42,36 @@ pub struct App {
     pub genesis_file: PathBuf,
     pub private_key_file: PathBuf,
     pub start_height: Option<Height>,
+    pub staking_contract_address: Option<String>,
+    pub el_host: String,
+    pub el_port_offset: u16,
+    pub jwt_secret_path: String,
 }
 
 pub struct Handle {
     pub app: JoinHandle<()>,
     pub engine: EngineHandle,
     pub tx_event: TxEvent<TestContext>,
+}
+
+impl App {
+    /// Get the engine port based on moniker and offset
+    fn get_engine_port(&self) -> u16 {
+        let base_port = match self.config.moniker.as_str() {
+            "test-0" => 8551,
+            "test-1" => 18551,
+            "test-2" => 28551,
+            _ => 8551,
+        };
+        base_port + self.el_port_offset
+    }
+    
+    /// Get the Ethereum RPC URL
+    fn get_eth_url(&self) -> eyre::Result<Url> {
+        let eth_port = self.get_engine_port() - 6; // Typically engine port - 6 = eth port
+        Url::parse(&format!("http://{}:{}", self.el_host, eth_port))
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait]
@@ -164,29 +188,31 @@ impl Node for App {
 
         let store = Store::open(self.get_home_dir().join("store.db"), metrics)?;
         let start_height = self.start_height.unwrap_or_default();
-        let mut state = State::new(genesis, ctx, signing_provider, address, start_height, store);
+        
+        // Initialize staking contract if address is configured
+        let staking_contract = if let Some(contract_address) = &self.staking_contract_address {
+            let eth_url = self.get_eth_url()?;
+            let eth_rpc = EthereumRPC::new(eth_url)?;
+            Some(malachitebft_eth_engine::staking::StakingContract::new(
+                eth_rpc,
+                contract_address.clone(),
+            ))
+        } else {
+            tracing::info!("No staking contract address configured, using static validator set");
+            None
+        };
+        
+        let mut state = State::new(genesis, ctx, signing_provider, address, start_height, store, staking_contract);
 
         let engine: Engine = {
-            // TODO: make EL host, EL port, and jwt secret configurable
+            // Use configurable EL host, port, and jwt secret
             let engine_url: Url = {
-                let engine_port = match self.config.moniker.as_str() {
-                    "test-0" => 8551,
-                    "test-1" => 18551,
-                    "test-2" => 28551,
-                    _ => 8551,
-                };
-                Url::parse(&format!("http://localhost:{engine_port}"))?
+                let engine_port = self.get_engine_port();
+                Url::parse(&format!("http://{}:{}", self.el_host, engine_port))?
             };
-            let jwt_path = PathBuf::from_str("./assets/jwtsecret")?; // Should be the same secret used by the execution client.
-            let eth_url: Url = {
-                let eth_port = match self.config.moniker.as_str() {
-                    "test-0" => 8545,
-                    "test-1" => 18545,
-                    "test-2" => 28545,
-                    _ => 8545,
-                };
-                Url::parse(&format!("http://localhost:{eth_port}"))?
-            };
+            let jwt_path = PathBuf::from_str(&self.jwt_secret_path)?;
+            let eth_url: Url = self.get_eth_url()?;
+            
             Engine::new(
                 EngineRPC::new(engine_url, jwt_path.as_path())?,
                 EthereumRPC::new(eth_url)?,

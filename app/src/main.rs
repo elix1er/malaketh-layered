@@ -85,6 +85,10 @@ fn start(args: &Args, cmd: &StartCmd, logging: config::LoggingConfig) -> Result<
         genesis_file: args.get_genesis_file_path()?,
         private_key_file: args.get_priv_validator_key_file_path()?,
         start_height: cmd.start_height.map(Height::new),
+        staking_contract_address: cmd.staking_contract.clone(),
+        el_host: cmd.el_host.clone(),
+        el_port_offset: cmd.el_port_offset,
+        jwt_secret_path: cmd.jwt_secret_path.clone(),
     };
 
     // Start the node
@@ -100,6 +104,10 @@ fn init(args: &Args, cmd: &InitCmd, logging: config::LoggingConfig) -> Result<()
         genesis_file: args.get_genesis_file_path()?,
         private_key_file: args.get_priv_validator_key_file_path()?,
         start_height: Some(Height::new(1)), // We always start at height 1
+        staking_contract_address: None,
+        el_host: "localhost".to_string(),
+        el_port_offset: 0,
+        jwt_secret_path: "./assets/jwtsecret".to_string(),
     };
 
     cmd.run(
@@ -120,6 +128,10 @@ fn testnet(args: &Args, cmd: &TestnetCmd, logging: config::LoggingConfig) -> Res
         genesis_file: args.get_genesis_file_path()?,
         private_key_file: args.get_priv_validator_key_file_path()?,
         start_height: Some(Height::new(1)), // We always start at height 1
+        staking_contract_address: None,
+        el_host: "localhost".to_string(),
+        el_port_offset: 0,
+        jwt_secret_path: "./assets/jwtsecret".to_string(),
     };
 
     cmd.run(&app, &args.get_home_dir()?, logging)

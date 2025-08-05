@@ -11,6 +11,22 @@ use crate::metrics;
 pub struct StartCmd {
     #[clap(long)]
     pub start_height: Option<u64>,
+    
+    /// Address of the staking contract for dynamic validator sets
+    #[clap(long)]
+    pub staking_contract: Option<String>,
+    
+    /// Host for the execution layer (default: localhost)
+    #[clap(long, default_value = "localhost")]
+    pub el_host: String,
+    
+    /// Port offset for execution layer ports (default: 0)
+    #[clap(long, default_value = "0")]
+    pub el_port_offset: u16,
+    
+    /// Path to JWT secret file for engine API authentication
+    #[clap(long, default_value = "./assets/jwtsecret")]
+    pub jwt_secret_path: String,
 }
 
 impl StartCmd {
